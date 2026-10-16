@@ -6,8 +6,98 @@ EditorBuildSettings:
   serializedVersion: 2
   m_Scenes:
   - enabled: 1
-    path: Assets/Testing Ground/SampleScene.unity
-    guid: 99c9720ab356a0642a771bea13969a05
+    path: Assets/Scenes/Menu/MainMenu.unity
+    guid: f89aa969988df457cabfeada1f2f5b72
+  - enabled: 1
+    path: Assets/Scenes/Menu/Prologue.unity
+    guid: 9949b7e7208c84752bf7aa979ec4b365
+  - enabled: 1
+    path: Assets/gamebackup.unity
+    guid: 4e5f766e344d644f7b3041b006a3cf31
+  - enabled: 1
+    path: Assets/Scenes/Terrain/Terrain_-125_-125.unity
+    guid: a329d5ff8c40c429abe1d8ee935a93be
+  - enabled: 1
+    path: Assets/Scenes/Terrain/Terrain_-125_-225.unity
+    guid: 5701c984a0e904a8990da5bf9aa0d7fc
+  - enabled: 1
+    path: Assets/Scenes/Terrain/Terrain_-125_-25.unity
+    guid: 4d8a0a845562e448682fd49441a60094
+  - enabled: 1
+    path: Assets/Scenes/Terrain/Terrain_-125_175.unity
+    guid: aab46a2744eda44c990b1e1cf8b9d922
+  - enabled: 1
+    path: Assets/Scenes/Terrain/Terrain_-125_275.unity
+    guid: c87db2d6a55b8463aa095a76201fa049
+  - enabled: 1
+    path: Assets/Scenes/Terrain/Terrain_-125_75.unity
+    guid: 5f7e305688ca04e5a895ecf3cbc31980
+  - enabled: 1
+    path: Assets/Scenes/Terrain/Terrain_-225_-125.unity
+    guid: 1813604742f0c45d981b87bc5f1785db
+  - enabled: 1
+    path: Assets/Scenes/Terrain/Terrain_-225_-225.unity
+    guid: c1267149e1d4e4ecf92759503d77d1e1
+  - enabled: 1
+    path: Assets/Scenes/Terrain/Terrain_-225_-25.unity
+    guid: fc240b35d92bf44019654895d0bdd340
+  - enabled: 1
+    path: Assets/Scenes/Terrain/Terrain_-225_175.unity
+    guid: 2cfdb5dd9683d4ad891641b8d315c964
+  - enabled: 1
+    path: Assets/Scenes/Terrain/Terrain_-225_275.unity
+    guid: ace1386d093bf400c96620af8d2083aa
+  - enabled: 1
+    path: Assets/Scenes/Terrain/Terrain_-225_75.unity
+    guid: 053302353b3474c499c97abd851a4b63
+  - enabled: 1
+    path: Assets/Scenes/Terrain/Terrain_-25_-225.unity
+    guid: 078ba804893954ecdbf2c01d03ae09cb
+  - enabled: 1
+    path: Assets/Scenes/Terrain/Terrain_-25_175.unity
+    guid: a8860ff7b3a924672a8ef9ace07bed36
+  - enabled: 1
+    path: Assets/Scenes/Terrain/Terrain_-25_275.unity
+    guid: f083a1d7400824412a1ca2755c783987
+  - enabled: 1
+    path: Assets/Scenes/Terrain/Terrain_-25_75.unity
+    guid: 7309af77e7bca43f7997339c40e03a43
+  - enabled: 1
+    path: Assets/Scenes/Terrain/Terrain_-325_-125.unity
+    guid: 52f3a87c7219c46dfa1adb4563905a11
+  - enabled: 1
+    path: Assets/Scenes/Terrain/Terrain_-325_-225.unity
+    guid: 617c9034d937248dc8fe02488150b1e1
+  - enabled: 1
+    path: Assets/Scenes/Terrain/Terrain_-325_-25.unity
+    guid: 4d6e9a8439af74b2f8c75c285cd1dd51
+  - enabled: 1
+    path: Assets/Scenes/Terrain/Terrain_175_-125.unity
+    guid: 7238899264315489aac24da0251a3e55
+  - enabled: 1
+    path: Assets/Scenes/Terrain/Terrain_175_-25.unity
+    guid: 5399ec1e71aa94fc4bae573e9302d240
+  - enabled: 1
+    path: Assets/Scenes/Terrain/Terrain_175_75.unity
+    guid: 7e45c4fbca7424fb39c969ef68dddfeb
+  - enabled: 1
+    path: Assets/Scenes/Terrain/Terrain_75_-125.unity
+    guid: fba96789551904b98b57ee2bc08e0d14
+  - enabled: 1
+    path: Assets/Scenes/Terrain/Terrain_75_-225.unity
+    guid: 841a30372a6284eb782ae4ebb0e56054
+  - enabled: 1
+    path: Assets/Scenes/Terrain/Terrain_75_-25.unity
+    guid: 9c3590c7e32ba4350914ec6cd791f065
+  - enabled: 1
+    path: Assets/Scenes/Terrain/Terrain_75_175.unity
+    guid: 71a02cfcbc4fa441ab126ab2bf265c2f
+  - enabled: 1
+    path: Assets/Scenes/Terrain/Terrain_75_75.unity
+    guid: 1505e3f08c6a845a5bf4a5a10c3e0081
+  - enabled: 1
+    path: Assets/Scenes/Finale.unity
+    guid: 3c69b4d6713584299a456d86511dde27
   m_configObjects:
     com.unity.input.settings.actions: {fileID: -944628639613478452, guid: 052faaac586de48259a63d0c4782560b, type: 3}
   m_UseUCBPForAssetBundles: 0

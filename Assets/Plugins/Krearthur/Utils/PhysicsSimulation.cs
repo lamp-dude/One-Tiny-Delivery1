@@ -25,7 +25,6 @@ SOFTWARE.
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
-using UnityEditor;
 using System.Linq;
 
 public class PhysicsSimulation : MonoBehaviour
@@ -64,7 +63,8 @@ public class PhysicsSimulation : MonoBehaviour
         }
 
         // Run simulation for maxIteration frames, or until all child rigidbodies are sleeping
-        Physics.autoSimulation = false;
+        SimulationMode previousSimulationMode = Physics.simulationMode;
+        Physics.simulationMode = SimulationMode.Script;
         for (int i = 0; i < maxIterations; i++)
         {
             Physics.Simulate(Time.fixedDeltaTime);
@@ -73,7 +73,7 @@ public class PhysicsSimulation : MonoBehaviour
                 break;
             }
         }
-        Physics.autoSimulation = true;
+        Physics.simulationMode = previousSimulationMode;
 
         // Reset bodies which are not child objects of the transform to which this script is attached
         foreach (SimulatedBody body in simulatedBodies)

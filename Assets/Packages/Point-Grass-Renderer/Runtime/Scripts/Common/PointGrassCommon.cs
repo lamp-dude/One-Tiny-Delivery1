@@ -20,6 +20,11 @@ namespace MicahW.PointGrass {
         public static bool PropertyIDsInitialized { get; private set; }
         private static ComputeBuffer inactiveDisplacementBuffer;
 
+        // TerrainData.GetHeight crosses into the engine for every sample. Terrain
+        // point generation touches millions of vertices, so read the normalized
+        // heightmap once per terrain tile and sample it from managed memory.
+        private static float[,] cachedHeights;
+
         // Metal requires every StructuredBuffer declared by the active shader variant to
         // be bound, even when its count is zero. A single shared, zero-strength object
         // keeps the optional displacement path valid when no manager is in the scene.
@@ -238,6 +243,9 @@ namespace MicahW.PointGrass {
         private static float[,,] alphamaps;
         private static bool[] grassLayerMask;
         private static Texture2D[] layerTextures;
+        private static Color32[][] layerTexturePixels;
+        private static int[] layerTextureWidths, layerTextureHeights;
+        private static TerrainLayer[] cachedTerrainLayers;
         private static Vector2[] layerOffsets, layerSizes;
         private static Color[] layerDiffuseRemapMins, layerDiffuseRemapMaxs;
 
@@ -263,7 +271,7 @@ namespace MicahW.PointGrass {
                 if (tileSize.x <= 0f || tileSize.y <= 0f) { continue; }
 
                 Vector2 textureUV = new Vector2(localPosition.x / tileSize.x, localPosition.z / tileSize.y) + layerOffsets[i];
-                Color diffuse = layerTextures[i].GetPixelBilinear(textureUV.x, textureUV.y);
+                Color diffuse = SampleLayerTextureBilinear(i, textureUV);
                 // Terrain diffuse remaps use the sampled colour as a per-channel
                 // interpolation factor, rather than one scalar interpolation value.
                 Color remapMin = layerDiffuseRemapMins[i];
@@ -278,6 +286,26 @@ namespace MicahW.PointGrass {
 
             terrainColor.a = 1f;
             return terrainColor;
+        }
+
+        private static Color SampleLayerTextureBilinear(int layer, Vector2 uv) {
+            Color32[] pixels = layerTexturePixels[layer];
+            int width = layerTextureWidths[layer];
+            int height = layerTextureHeights[layer];
+            if (pixels == null || width <= 0 || height <= 0) { return Color.white; }
+
+            float x = Mathf.Repeat(uv.x, 1f) * (width - 1);
+            float y = Mathf.Repeat(uv.y, 1f) * (height - 1);
+            int x0 = Mathf.FloorToInt(x);
+            int y0 = Mathf.FloorToInt(y);
+            int x1 = (x0 + 1) % width;
+            int y1 = (y0 + 1) % height;
+            float tx = x - x0;
+            float ty = y - y0;
+
+            Color bottom = Color.Lerp((Color)pixels[y0 * width + x0], (Color)pixels[y0 * width + x1], tx);
+            Color top = Color.Lerp((Color)pixels[y1 * width + x0], (Color)pixels[y1 * width + x1], tx);
+            return Color.Lerp(bottom, top, ty);
         }
 
         private static float SampleAlphamapBilinear(Vector2 uv, int layer) {
@@ -326,16 +354,9 @@ namespace MicahW.PointGrass {
         /// <param name="terrain">The terrain data that is cached</param>
         /// <param name="grassLayers">The target layers that will be used for distributing grass</param>
         public static void CacheTerrainData(TerrainData terrain, TerrainLayer[] grassLayers) {
-            // Terrain layers may change between point builds. Release the previous readable
-            // copies before rebuilding the cache so repeated editor rebuilds do not leak them.
-            if (layerTextures != null) {
-                for (int i = 0; i < layerTextures.Length; i++) {
-                    if (layerTextures[i] != null) { Object.Destroy(layerTextures[i]); }
-                }
-            }
-
             heightmapSize = terrain.heightmapResolution;
             terrainSize = terrain.size;
+            cachedHeights = terrain.GetHeights(0, 0, heightmapSize, heightmapSize);
 
             alphamapWidth = terrain.alphamapWidth;
             alphamapHeight = terrain.alphamapHeight;
@@ -343,8 +364,34 @@ namespace MicahW.PointGrass {
             alphamaps = terrain.GetAlphamaps(0, 0, alphamapWidth, alphamapHeight);
 
             TerrainLayer[] terrainLayers = terrain.terrainLayers;
+            bool rebuildTextureCopies = layerTextures == null || cachedTerrainLayers == null ||
+                                        cachedTerrainLayers.Length != terrainLayers.Length ||
+                                        numLayers != terrainLayers.Length;
+            if (!rebuildTextureCopies) {
+                for (int i = 0; i < terrainLayers.Length; i++) {
+                    if (cachedTerrainLayers[i] != terrainLayers[i]) {
+                        rebuildTextureCopies = true;
+                        break;
+                    }
+                }
+            }
+
+            if (rebuildTextureCopies && layerTextures != null) {
+                for (int i = 0; i < layerTextures.Length; i++) {
+                    if (layerTextures[i] == null) { continue; }
+                    if (Application.isPlaying) Object.Destroy(layerTextures[i]);
+                    else Object.DestroyImmediate(layerTextures[i]);
+                }
+            }
+
             grassLayerMask = new bool[numLayers];
-            layerTextures = new Texture2D[numLayers];
+            if (rebuildTextureCopies) {
+                layerTextures = new Texture2D[numLayers];
+                layerTexturePixels = new Color32[numLayers][];
+                layerTextureWidths = new int[numLayers];
+                layerTextureHeights = new int[numLayers];
+                cachedTerrainLayers = (TerrainLayer[])terrainLayers.Clone();
+            }
             layerOffsets = new Vector2[numLayers];
             layerSizes = new Vector2[numLayers];
             layerDiffuseRemapMins = new Color[numLayers];
@@ -352,7 +399,12 @@ namespace MicahW.PointGrass {
             for (int i = 0; i < numLayers; i++) {
                 grassLayerMask[i] = grassLayers.Contains(terrainLayers[i]);
 
-                layerTextures[i] = CreateTerrainTextureCopy(terrain.terrainLayers[i].diffuseTexture);
+                if (rebuildTextureCopies) {
+                    layerTextures[i] = CreateTerrainTextureCopy(terrainLayers[i].diffuseTexture);
+                    layerTexturePixels[i] = layerTextures[i].GetPixels32();
+                    layerTextureWidths[i] = layerTextures[i].width;
+                    layerTextureHeights[i] = layerTextures[i].height;
+                }
                 layerOffsets[i] = terrain.terrainLayers[i].tileOffset;
                 layerSizes[i] = terrain.terrainLayers[i].tileSize;
                 layerDiffuseRemapMins[i] = terrain.terrainLayers[i].diffuseRemapMin;
@@ -394,10 +446,11 @@ namespace MicahW.PointGrass {
                     // Get the local-space position of the vertex
                     Vector3 vertPos = new Vector3(uv.x, 0f, uv.y);
                     vertPos.Scale(terrainSize);
-                    vertPos.y = terrain.GetHeight(terrainSpaceX, terrainSpaceY);
-                    // Calculate the grass density mask and terrain colour
+                    vertPos.y = cachedHeights[terrainSpaceY, terrainSpaceX] * terrainSize.y;
+                    // Calculate the grass density mask. Per-blade colour is sampled after
+                    // distribution, so doing the same texture work for every source vertex
+                    // here would be redundant.
                     float grassMask = 0f;
-                    Color terrainColor = Color.black;
                     // Get the pixel coordinate of the vertex
                     int coordX = Mathf.FloorToInt(uv.x * (alphamapWidth - 1));
                     int coordY = Mathf.FloorToInt(uv.y * (alphamapHeight - 1));
@@ -406,9 +459,6 @@ namespace MicahW.PointGrass {
                         float alphamapVal = alphamaps[coordY, coordX, i];
                         if (grassLayerMask[i]) { grassMask += alphamapVal; }
                     }
-                    // This is a fallback for generic mesh distribution. Terrain grass
-                    // resamples this per blade through MeshData.pointColorSampler below.
-                    terrainColor = SampleCachedTerrainColor(vertPos);
                     // Apply the density cutoff to the density mask
                     if (maskDivisor <= 0f) { grassMask = 0f; }
                     else { grassMask = Mathf.Clamp01((grassMask - densityCutoff) / maskDivisor); }
@@ -418,7 +468,7 @@ namespace MicahW.PointGrass {
                     vertices[vertexIndex] = vertPos;
                     uvs[vertexIndex] = new Vector2(vertPos.x, vertPos.z);
                     attrs[vertexIndex] = new Vector2(bladeDensity, bladeHeight);
-                    colors[vertexIndex] = terrainColor;
+                    colors[vertexIndex] = Color.white;
                 }
             }
 

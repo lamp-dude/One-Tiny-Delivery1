@@ -1,4 +1,4 @@
-﻿
+﻿#if UNITY_EDITOR
 using Krearthur.GOP;
 using UnityEngine;
 using static Krearthur.GOP.GOPainter;
@@ -82,3 +82,4 @@ public class GOPAudio
         audio.PlayOneShot(clip);
     }
 }
+#endif

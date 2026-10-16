@@ -543,15 +543,6 @@
                     "initialStateCheck": false
                 },
                 {
-                    "name": "ScrollWheel",
-                    "type": "PassThrough",
-                    "id": "0489e84a-4833-4c40-bfae-cea84b696689",
-                    "expectedControlType": "Vector2",
-                    "processors": "",
-                    "interactions": "",
-                    "initialStateCheck": false
-                },
-                {
                     "name": "TrackedDevicePosition",
                     "type": "PassThrough",
                     "id": "24908448-c609-4bc3-a128-ea258674378a",
@@ -931,17 +922,6 @@
                     "processors": "",
                     "groups": "XR",
                     "action": "Click",
-                    "isComposite": false,
-                    "isPartOfComposite": false
-                },
-                {
-                    "name": "",
-                    "id": "38c99815-14ea-4617-8627-164d27641299",
-                    "path": "<Mouse>/scroll",
-                    "interactions": "",
-                    "processors": "",
-                    "groups": ";Keyboard&Mouse",
-                    "action": "ScrollWheel",
                     "isComposite": false,
                     "isPartOfComposite": false
                 },

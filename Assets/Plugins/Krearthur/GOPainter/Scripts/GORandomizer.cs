@@ -1,5 +1,7 @@
 ﻿using UnityEngine;
+#if UNITY_EDITOR
 using UnityEditor;
+#endif
 using Krearthur.Utils;
 
 namespace Krearthur.GOP
@@ -53,7 +55,7 @@ namespace Krearthur.GOP
 #endif
             propBlock = new MaterialPropertyBlock();
 
-            Marker[] markers = GameObject.FindObjectsOfType<Marker>();
+            Marker[] markers = Object.FindObjectsByType<Marker>(FindObjectsSortMode.None);
             if (markers == null) return;
             foreach (Marker marker in markers)
             {

@@ -5,3 +5,5 @@ Assets/TerrainData_76a64815-cd4f-43e7-bf49-edb59026d224.asset filter=lfs diff=lf
 Assets/TerrainData_d9551272-c18a-48ff-b395-0b01bb99630e.asset filter=lfs diff=lfs merge=lfs -text
 Assets/TerrainData_f30d9319-25dd-49e0-a144-f486ab39e6ca.asset filter=lfs diff=lfs merge=lfs -text
 Assets/New[[:space:]]Terrain[[:space:]]1.asset filter=lfs diff=lfs merge=lfs -text
+ProfilerCaptures/*.data.gz filter=lfs diff=lfs merge=lfs -text
+Assets/TerrainData_*.asset filter=lfs diff=lfs merge=lfs -text

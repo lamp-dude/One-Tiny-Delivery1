@@ -31,12 +31,24 @@ namespace MicahW.PointGrass {
         public Mesh[] grassBladeMeshes = new Mesh[1];
         public float[] meshDensityValues = new float[] { 1f };
 
+        [Header("Flower Field Distribution")]
+        [Tooltip("Cluster flower variants in softly blended, irregular world-space fields.")]
+        public bool groupMeshesByPatch;
+        [Min(1f)] public float flowerFieldScale = 11f;
+        [Range(0f, 1f)] public float flowerFieldCoverage = 0.55f;
+
         public bool multipleMaterials = false;
         public Material material = default;
         public Material[] materials = new Material[1];
 
         public UnityEngine.Rendering.ShadowCastingMode shadowMode = UnityEngine.Rendering.ShadowCastingMode.On;
         public SingleLayer renderLayer;
+
+        [Header("Runtime Culling")]
+        [Tooltip("Grass farther than this distance from the main camera is not submitted. Set to 0 to disable distance culling.")]
+        [Min(0f)] public float maxRenderDistance = 225f;
+        [Tooltip("When disabled, grass is drawn only by the main camera and is omitted from auxiliary cameras such as planar reflections.")]
+        public bool renderInAuxiliaryCameras;
 
         [Header("Editor Preview")]
         [Tooltip("Hides this procedural grass renderer in Edit Mode without affecting Play Mode or builds.")]
@@ -66,6 +78,28 @@ namespace MicahW.PointGrass {
         private ComputeBuffer[] pointBuffers;
         private MaterialPropertyBlock[] materialBlocks;
         private Bounds[] boundingBoxes;
+        private Bounds[] worldBoundingBoxes;
+        // Terrain vegetation can be submitted as one buffer per variant when a
+        // tile mostly fills the view. The original chunk buffers remain available
+        // for small partial views, so this never changes what is drawn.
+        private ComputeBuffer[] terrainPointBuffers;
+        private MaterialPropertyBlock[] terrainMaterialBlocks;
+        private Bounds[] terrainBoundingBoxes;
+        private Bounds[] terrainWorldBoundingBoxes;
+        private int[] terrainChunkStarts;
+        private int[] terrainChunkCounts;
+        private bool[] visibleChunks;
+        // Above this coverage, one terrain-wide flower buffer is cheaper than
+        // submitting the individual chunks, even though it includes the few
+        // chunks just outside the camera.
+        private const float TerrainBatchCoverageThreshold = 0.25f;
+        private Matrix4x4 cachedBoundsMatrix;
+        private Matrix4x4 cachedPropertyMatrix;
+        private Bounds cachedBoundsOffset;
+        private bool propertyBlocksInitialized;
+        private PointGrassDisplacementManager cachedDisplacementManager;
+        private int cachedDisplacerCount = -1;
+        private readonly Plane[] cameraFrustumPlanes = new Plane[6];
 
         [Header("Projection Parameters")]
         public ProjectionType projectType;
@@ -181,6 +215,11 @@ namespace MicahW.PointGrass {
             // Generate the grass blade mesh if it isn't active
             if (grassMeshFlat == null || grassMeshCyl == null) { GenerateGrassMeshes(); }
 
+#if UNITY_EDITOR
+            // This scene intentionally hides its grass preview. Avoid rebuilding thousands of
+            // terrain chunks after every script reload when those buffers cannot be seen.
+            if (!Application.isPlaying && hideGrassInEditor) { return; }
+#endif
             BuildPoints();
         }
         private void OnDisable() { ClearBuffers(); }
@@ -253,9 +292,19 @@ namespace MicahW.PointGrass {
             List<ComputeBuffer> bufferList = new List<ComputeBuffer>();
             List<MaterialPropertyBlock> blockList = new List<MaterialPropertyBlock>();
             List<Bounds> boundsList = new List<Bounds>();
+            List<ComputeBuffer> terrainBufferList = new List<ComputeBuffer>();
+            List<MaterialPropertyBlock> terrainBlockList = new List<MaterialPropertyBlock>();
+            List<Bounds> terrainBoundsList = new List<Bounds>();
+            List<int> terrainStarts = new List<int>();
+            List<int> terrainCounts = new List<int>();
             Terrain[] sourceTerrains = GetTerrainSources();
             int chunksX = Mathf.Max(1, chunkCount.x);
             int chunksY = Mathf.Max(1, chunkCount.y);
+            int variantsPerChunk = UsingMultipleMeshes ? grassBladeMeshes.Length : 1;
+            // Keep a terrain-wide representation for both grass and flowers.
+            // It is selected only when enough of the terrain is visible to offset
+            // the small amount of overdraw with far fewer render submissions.
+            bool buildTerrainAggregates = variantsPerChunk > 0;
 
             for (int terrainIndex = 0; terrainIndex < sourceTerrains.Length; terrainIndex++) {
                 Terrain sourceTerrain = sourceTerrains[terrainIndex];
@@ -265,6 +314,17 @@ namespace MicahW.PointGrass {
                 CacheTerrainData(sourceData, terrainLayers);
                 Matrix4x4 terrainToRenderer = transform.worldToLocalMatrix * sourceTerrain.transform.localToWorldMatrix;
                 Matrix4x4 rendererToTerrain = sourceTerrain.transform.worldToLocalMatrix * transform.localToWorldMatrix;
+                int terrainStartChunk = bufferList.Count / variantsPerChunk;
+                int terrainStartBuffer = bufferList.Count;
+                List<MeshPoint>[] terrainPoints = null;
+                Bounds terrainBounds = default;
+                bool hasTerrainBounds = false;
+                if (buildTerrainAggregates) {
+                    terrainPoints = new List<MeshPoint>[variantsPerChunk];
+                    for (int variant = 0; variant < variantsPerChunk; variant++) {
+                        terrainPoints[variant] = new List<MeshPoint>();
+                    }
+                }
 
                 for (int x = 0; x < chunksX; x++) {
                     for (int y = 0; y < chunksY; y++) {
@@ -277,7 +337,7 @@ namespace MicahW.PointGrass {
 
                         Bounds bounds = CalculatePointBounds(points);
                         if (UsingMultipleMeshes) {
-                            CreateBuffersFromPoints_Multi(points, out ComputeBuffer[] buffers, out MaterialPropertyBlock[] blocks);
+                            CreateBuffersFromPoints_Multi(points, out ComputeBuffer[] buffers, out MaterialPropertyBlock[] blocks, terrainPoints);
                             if (buffers == null) { continue; }
                             bufferList.AddRange(buffers);
                             blockList.AddRange(blocks);
@@ -291,6 +351,19 @@ namespace MicahW.PointGrass {
                             blockList.Add(block);
                             boundsList.Add(bounds);
                         }
+                        if (!hasTerrainBounds) { terrainBounds = bounds; hasTerrainBounds = true; }
+                        else { terrainBounds.Encapsulate(bounds); }
+                    }
+                }
+                int terrainBufferCount = bufferList.Count - terrainStartBuffer;
+                if (buildTerrainAggregates && hasTerrainBounds && terrainBufferCount >= variantsPerChunk) {
+                    terrainStarts.Add(terrainStartChunk);
+                    terrainCounts.Add(terrainBufferCount / variantsPerChunk);
+                    for (int variant = 0; variant < variantsPerChunk; variant++) {
+                        CreateBufferFromPoints(terrainPoints[variant].ToArray(), out ComputeBuffer buffer, out MaterialPropertyBlock block);
+                        terrainBufferList.Add(buffer);
+                        terrainBlockList.Add(block);
+                        terrainBoundsList.Add(terrainBounds);
                     }
                 }
             }
@@ -299,6 +372,13 @@ namespace MicahW.PointGrass {
                 pointBuffers = bufferList.ToArray();
                 materialBlocks = blockList.ToArray();
                 boundingBoxes = boundsList.ToArray();
+                if (terrainBufferList.Count > 0) {
+                    terrainPointBuffers = terrainBufferList.ToArray();
+                    terrainMaterialBlocks = terrainBlockList.ToArray();
+                    terrainBoundingBoxes = terrainBoundsList.ToArray();
+                    terrainChunkStarts = terrainStarts.ToArray();
+                    terrainChunkCounts = terrainCounts.ToArray();
+                }
             }
         }
         /// <summary>Retrieves/creates mesh data based on the renderer's parameters</summary>
@@ -425,12 +505,30 @@ namespace MicahW.PointGrass {
         }
         /// <summary>Clears all the buffers and arrays from the renderer</summary>
         private void ClearBuffers() {
-            if (pointBuffer != null) { pointBuffer.Release(); }
+            if (pointBuffer != null) { pointBuffer.Release(); pointBuffer = null; }
             if (pointBuffers != null) {
-                for (int i = 0; i < pointBuffers.Length; i++) { pointBuffers[i].Release(); }
+                for (int i = 0; i < pointBuffers.Length; i++) { if (pointBuffers[i] != null) { pointBuffers[i].Release(); } }
                 pointBuffers = null;
             }
+            materialBlock = null;
+            materialBlocks = null;
             if (boundingBoxes != null) { boundingBoxes = null; }
+            worldBoundingBoxes = null;
+            if (terrainPointBuffers != null) {
+                for (int i = 0; i < terrainPointBuffers.Length; i++) {
+                    if (terrainPointBuffers[i] != null) { terrainPointBuffers[i].Release(); }
+                }
+            }
+            terrainPointBuffers = null;
+            terrainMaterialBlocks = null;
+            terrainBoundingBoxes = null;
+            terrainWorldBoundingBoxes = null;
+            terrainChunkStarts = null;
+            terrainChunkCounts = null;
+            visibleChunks = null;
+            propertyBlocksInitialized = false;
+            cachedDisplacementManager = null;
+            cachedDisplacerCount = -1;
         }
 
         /// <summary>Creates a compute buffer and material property block from an array of type <c>MeshPoint</c></summary>
@@ -451,12 +549,38 @@ namespace MicahW.PointGrass {
         /// <param name="points">The array of points</param>
         /// <param name="buffers">The output compute buffers</param>
         /// <param name="blocks">The output material property blocks</param>
-        private void CreateBuffersFromPoints_Multi(MeshPoint[] points, out ComputeBuffer[] buffers, out MaterialPropertyBlock[] blocks) {
+        private void CreateBuffersFromPoints_Multi(MeshPoint[] points, out ComputeBuffer[] buffers, out MaterialPropertyBlock[] blocks,
+            List<MeshPoint>[] aggregatePoints = null) {
             // Check if the points array is valid
             if (points == null || points.Length == 0) { buffers = null; blocks = null; return; }
             // Local copies of the array lengths for readability
             int pointCount = points.Length;
             int meshCount = grassBladeMeshes.Length;
+
+            if (groupMeshesByPatch) {
+                buffers = new ComputeBuffer[meshCount];
+                blocks = new MaterialPropertyBlock[meshCount];
+                List<MeshPoint>[] patches = new List<MeshPoint>[meshCount];
+                int expectedCount = Mathf.Max(4, Mathf.CeilToInt(pointCount * flowerFieldCoverage * 0.5f / meshCount));
+                for (int i = 0; i < meshCount; i++) { patches[i] = new List<MeshPoint>(expectedCount); }
+                Matrix4x4 localToWorld = transform.localToWorldMatrix;
+                float fieldScale = Mathf.Max(1f, flowerFieldScale);
+                float seedOffset = (seed & 1023) * 0.071f;
+                float fieldCoverage = Mathf.Clamp01(flowerFieldCoverage);
+                for (int i = 0; i < pointCount; i++) {
+                    Vector3 world = localToWorld.MultiplyPoint3x4(points[i].position);
+                    int variant = GetFieldVariant(world, meshCount, fieldScale, seedOffset, fieldCoverage);
+                    if (variant >= 0) { patches[variant].Add(points[i]); }
+                }
+                for (int i = 0; i < meshCount; i++) {
+                    if (patches[i].Count == 0) { continue; }
+                    if (aggregatePoints != null) { aggregatePoints[i].AddRange(patches[i]); }
+                    buffers[i] = new ComputeBuffer(patches[i].Count, MeshPoint.stride);
+                    buffers[i].SetData(patches[i]);
+                    blocks[i] = CreateMaterialPropertyBlock(buffers[i]);
+                }
+                return;
+            }
 
             if (pointCount < meshCount) { buffers = null; blocks = null; } // Since some buffers would have a size of 0, return nothing to prevent errors
             else {
@@ -486,10 +610,63 @@ namespace MicahW.PointGrass {
 
                     buffers[i] = new ComputeBuffer(bufferSize, MeshPoint.stride); // Create the buffer
                     buffers[i].SetData(points, dataPointer, 0, bufferSize); // Fill the buffer with the next set of points
+                    if (aggregatePoints != null) {
+                        for (int pointIndex = 0; pointIndex < bufferSize; pointIndex++) {
+                            aggregatePoints[i].Add(points[dataPointer + pointIndex]);
+                        }
+                    }
                     blocks[i] = CreateMaterialPropertyBlock(buffers[i]); // Create a material property block
 
                     dataPointer += bufferSize; // Increase the data pointer
                 }
+            }
+        }
+
+        private int GetFieldVariant(Vector3 world, int meshCount, float scale, float seedOffset, float fieldCoverage) {
+            float warpX = (Mathf.PerlinNoise(world.x / (scale * 1.7f) + 31.4f + seedOffset,
+                world.z / (scale * 1.7f) + 72.1f) - 0.5f) * scale * 0.9f;
+            float warpZ = (Mathf.PerlinNoise(world.x / (scale * 1.7f) + 91.7f,
+                world.z / (scale * 1.7f) + 18.6f + seedOffset) - 0.5f) * scale * 0.9f;
+            float x = (world.x + warpX) / scale;
+            float z = (world.z + warpZ) / scale;
+            float coverage = Mathf.PerlinNoise(x * 0.75f + 13.7f + seedOffset, z * 0.75f + 46.2f) * 0.7f
+                + Mathf.PerlinNoise(x * 2.1f + 61.3f, z * 2.1f + 27.9f + seedOffset) * 0.3f;
+            // Fade flower frequency in and out across the field instead of cutting circular holes.
+            float fade = Mathf.SmoothStep(0f, 1f, (coverage - 0.32f) / 0.36f);
+            uint pointHash = HashPatch(Mathf.FloorToInt(world.x * 64f), Mathf.FloorToInt(world.z * 64f), seed);
+            float chance = fieldCoverage * fade;
+            if ((pointHash & 65535u) / 65535f > chance) { return -1; }
+
+            int bestVariant = 0;
+            int runnerUp = 0;
+            float bestScore = float.NegativeInfinity;
+            float secondScore = float.NegativeInfinity;
+            for (int i = 0; i < meshCount; i++) {
+                float offset = i * 47.83f;
+                float score = Mathf.PerlinNoise(x * 0.67f + 19.2f + offset + seedOffset,
+                    z * 0.67f + 83.1f + offset);
+                if (score > bestScore) {
+                    runnerUp = bestVariant;
+                    secondScore = bestScore;
+                    bestVariant = i;
+                    bestScore = score;
+                }
+                else if (score > secondScore) {
+                    runnerUp = i;
+                    secondScore = score;
+                }
+            }
+            // Occasional neighboring colors loosen borders without destroying the color grouping.
+            float mixChance = Mathf.Lerp(0.22f, 0.04f, Mathf.Clamp01((bestScore - secondScore) * 5f));
+            return ((pointHash >> 16) & 65535u) / 65535f < mixChance ? runnerUp : bestVariant;
+        }
+
+        private static uint HashPatch(int x, int z, int seed) {
+            unchecked {
+                uint value = (uint)x * 374761393u + (uint)z * 668265263u + (uint)seed * 2246822519u;
+                value ^= value >> 13;
+                value *= 1274126177u;
+                return value ^ (value >> 16);
             }
         }
         
@@ -500,12 +677,37 @@ namespace MicahW.PointGrass {
             // If there's no buffers to draw, return
             if (pointBuffer == null && pointBuffers == null) { return; }
 
+            Camera targetCamera = Camera.main;
+            if (targetCamera == null) { return; }
+            float maxDistanceSqr = maxRenderDistance > 0f ? maxRenderDistance * maxRenderDistance : float.PositiveInfinity;
+
+            // Prebuilt distant tiles stay enabled so returning to them never rebuilds
+            // their buffers. Skip their draw setup entirely while out of range.
+            if (boundingBoxes != null && boundingBoxes.Length > 0) {
+                UpdateWorldBoundingBoxes();
+                if (terrainWorldBoundingBoxes != null && terrainWorldBoundingBoxes.Length > 0) {
+                    bool anyTerrainInRange = false;
+                    for (int i = 0; i < terrainWorldBoundingBoxes.Length; i++) {
+                        if (terrainWorldBoundingBoxes[i].SqrDistance(targetCamera.transform.position) > maxDistanceSqr) { continue; }
+                        anyTerrainInRange = true;
+                        break;
+                    }
+                    if (!anyTerrainInRange) { return; }
+                }
+            }
+
+            UpdateMaterialPropertyBlocksIfNeeded();
+            GeometryUtility.CalculateFrustumPlanes(targetCamera, cameraFrustumPlanes);
+
             Mesh mesh = GetGrassMesh();
             Material mat = material;
-            Bounds finalBounds = TransformBounds(GetLocalBounds());
+            Bounds finalBounds = default;
+            if (boundingBoxes == null || boundingBoxes.Length == 0) {
+                finalBounds = AddBoundsExtrusion(TransformBounds(GetLocalBounds()));
+            }
 
             bool hasPointBuffers = pointBuffers != null && pointBuffers.Length > 0;
-            bool useMultipleMeshes = UsingMultipleMeshes && grassBladeMeshes != null && hasPointBuffers;
+            bool useMultipleMeshes = UsingMultipleMeshes && grassBladeMeshes != null && grassBladeMeshes.Length > 0 && hasPointBuffers;
             bool useMultipleMats = multipleMaterials && materials != null && hasPointBuffers;
 
             // If there are multiple bounding boxes
@@ -515,16 +717,62 @@ namespace MicahW.PointGrass {
                     // avoids a broad bounds fallback and keeps each terrain chunk
                     // independently frustum cullable.
                     int drawCount = Mathf.Min(pointBuffers.Length, boundingBoxes.Length);
+                    int variantsPerChunk = useMultipleMeshes ? grassBladeMeshes.Length : 1;
+                    int terrainChunkCount = (drawCount + variantsPerChunk - 1) / variantsPerChunk;
+                    if (visibleChunks == null || visibleChunks.Length < terrainChunkCount) { visibleChunks = new bool[terrainChunkCount]; }
+                    Vector3 cameraPosition = targetCamera.transform.position;
+                    for (int chunk = 0; chunk < terrainChunkCount; chunk++) {
+                        Bounds chunkBounds = worldBoundingBoxes[chunk * variantsPerChunk];
+                        visibleChunks[chunk] = chunkBounds.SqrDistance(cameraPosition) <= maxDistanceSqr &&
+                            GeometryUtility.TestPlanesAABB(cameraFrustumPlanes, chunkBounds);
+                    }
+
+                    // A terrain-wide buffer contains exactly the same points as its chunk
+                    // buffers, but needs only one submission per flower variant. Use it
+                    // once most of the tile is visible; at that point the submission cost
+                    // of individual chunks is higher than drawing the small off-screen part.
+                    bool canUseTerrainBatches = terrainPointBuffers != null && terrainMaterialBlocks != null &&
+                        terrainWorldBoundingBoxes != null && terrainChunkStarts != null && terrainChunkCounts != null &&
+                        terrainPointBuffers.Length == terrainWorldBoundingBoxes.Length;
+                    if (canUseTerrainBatches) {
+                        for (int terrainIndex = 0; terrainIndex < terrainChunkStarts.Length; terrainIndex++) {
+                            int startChunk = terrainChunkStarts[terrainIndex];
+                            int endChunk = Mathf.Min(startChunk + terrainChunkCounts[terrainIndex], terrainChunkCount);
+                            int visibleChunkCount = 0;
+                            for (int chunk = startChunk; chunk < endChunk; chunk++) {
+                                if (visibleChunks[chunk]) { visibleChunkCount++; }
+                            }
+                            int chunkCount = endChunk - startChunk;
+                            if (chunkCount == 0 || visibleChunkCount < Mathf.CeilToInt(chunkCount * TerrainBatchCoverageThreshold)) { continue; }
+
+                            for (int variant = 0; variant < variantsPerChunk; variant++) {
+                                int terrainBufferIndex = terrainIndex * variantsPerChunk + variant;
+                                Mesh drawMesh = useMultipleMeshes ? grassBladeMeshes[variant] : mesh;
+                                Material drawMaterial = useMultipleMats && variant < materials.Length ? materials[variant] : mat;
+                                DrawGrassBuffer(terrainPointBuffers[terrainBufferIndex], ref terrainMaterialBlocks[terrainBufferIndex],
+                                    drawMesh, drawMaterial, terrainWorldBoundingBoxes[terrainBufferIndex], targetCamera);
+                            }
+                            for (int chunk = startChunk; chunk < endChunk; chunk++) { visibleChunks[chunk] = false; }
+                        }
+                    }
+
                     for (int i = 0; i < drawCount; i++) {
-                        finalBounds = TransformBounds(boundingBoxes[i]);
-                        int variantIndex = useMultipleMeshes ? i % grassBladeMeshes.Length : 0;
+                        if (!visibleChunks[i / variantsPerChunk]) { continue; }
+                        int variantIndex = useMultipleMeshes ? i % variantsPerChunk : 0;
                         Mesh drawMesh = useMultipleMeshes ? grassBladeMeshes[variantIndex] : mesh;
                         Material drawMaterial = useMultipleMats && variantIndex < materials.Length ? materials[variantIndex] : mat;
-                        DrawGrassBuffer(pointBuffers[i], ref materialBlocks[i], drawMesh, drawMaterial, finalBounds);
+                        DrawGrassBuffer(pointBuffers[i], ref materialBlocks[i], drawMesh, drawMaterial,
+                            worldBoundingBoxes[i], targetCamera);
                     }
                 }
                 // Backup for scene filters
-                else { DrawGrassBuffer(pointBuffer, ref materialBlock, mesh, mat, TransformBounds(boundingBoxes[0])); }
+                else {
+                    finalBounds = worldBoundingBoxes[0];
+                    if (finalBounds.SqrDistance(targetCamera.transform.position) <= maxDistanceSqr &&
+                        GeometryUtility.TestPlanesAABB(cameraFrustumPlanes, finalBounds)) {
+                        DrawGrassBuffer(pointBuffer, ref materialBlock, mesh, mat, finalBounds, targetCamera);
+                    }
+                }
             }
             // If we have multiple point buffers
             else if (hasPointBuffers) {
@@ -537,12 +785,67 @@ namespace MicahW.PointGrass {
                         mesh = grassBladeMeshes[i];
                         if (useMultipleMats) { mat = materials[i]; }
                     }
-                    DrawGrassBuffer(pointBuffers[i], ref materialBlocks[i], mesh, mat, finalBounds);
+                    DrawGrassBuffer(pointBuffers[i], ref materialBlocks[i], mesh, mat, finalBounds, targetCamera);
                 }
             }
             // If we only have the one point buffer
-            else { DrawGrassBuffer(pointBuffer, ref materialBlock, mesh, mat, finalBounds); }
+            else { DrawGrassBuffer(pointBuffer, ref materialBlock, mesh, mat, finalBounds, targetCamera); }
             
+        }
+        // The matrices and inactive displacement values are identical for every
+        // chunk of a static renderer. Updating them once prevents hundreds of
+        // native MaterialPropertyBlock writes on every frame.
+        private void UpdateMaterialPropertyBlocksIfNeeded() {
+            Matrix4x4 matrix = transform.localToWorldMatrix;
+            PointGrassDisplacementManager displacementManager = PointGrassDisplacementManager.instance;
+            int displacerCount = displacementManager != null ? displacementManager.ActiveDisplacerCount : 0;
+            if (propertyBlocksInitialized && cachedPropertyMatrix == matrix &&
+                cachedDisplacementManager == displacementManager && cachedDisplacerCount == displacerCount) { return; }
+            cachedPropertyMatrix = matrix;
+            cachedDisplacementManager = displacementManager;
+            cachedDisplacerCount = displacerCount;
+            propertyBlocksInitialized = true;
+            UpdateMaterialPropertyBlocks();
+        }
+        private void UpdateMaterialPropertyBlocks() {
+            if (!PropertyIDsInitialized) { FindPropertyIDs(); }
+            if (materialBlock != null) { UpdateMaterialPropertyBlock(ref materialBlock, transform); }
+            if (materialBlocks != null) {
+                for (int i = 0; i < materialBlocks.Length; i++) {
+                    if (materialBlocks[i] != null) { UpdateMaterialPropertyBlock(ref materialBlocks[i], transform); }
+                }
+            }
+            if (terrainMaterialBlocks != null) {
+                for (int i = 0; i < terrainMaterialBlocks.Length; i++) {
+                    if (terrainMaterialBlocks[i] != null) { UpdateMaterialPropertyBlock(ref terrainMaterialBlocks[i], transform); }
+                }
+            }
+        }
+        // Terrain chunks and flower variants keep the same local bounds until BuildPoints.
+        // Rebuild the world bounds only when the renderer moves or its padding changes.
+        private void UpdateWorldBoundingBoxes() {
+            Matrix4x4 matrix = transform.localToWorldMatrix;
+            if (worldBoundingBoxes != null && worldBoundingBoxes.Length == boundingBoxes.Length &&
+                (terrainBoundingBoxes == null || (terrainWorldBoundingBoxes != null &&
+                    terrainWorldBoundingBoxes.Length == terrainBoundingBoxes.Length)) &&
+                cachedBoundsMatrix == matrix && cachedBoundsOffset == boundingBoxOffset) { return; }
+
+            if (worldBoundingBoxes == null || worldBoundingBoxes.Length != boundingBoxes.Length) {
+                worldBoundingBoxes = new Bounds[boundingBoxes.Length];
+            }
+            cachedBoundsMatrix = matrix;
+            cachedBoundsOffset = boundingBoxOffset;
+            for (int i = 0; i < boundingBoxes.Length; i++) {
+                worldBoundingBoxes[i] = AddBoundsExtrusion(TransformBounds(boundingBoxes[i]));
+            }
+            if (terrainBoundingBoxes != null) {
+                if (terrainWorldBoundingBoxes == null || terrainWorldBoundingBoxes.Length != terrainBoundingBoxes.Length) {
+                    terrainWorldBoundingBoxes = new Bounds[terrainBoundingBoxes.Length];
+                }
+                for (int i = 0; i < terrainBoundingBoxes.Length; i++) {
+                    terrainWorldBoundingBoxes[i] = AddBoundsExtrusion(TransformBounds(terrainBoundingBoxes[i]));
+                }
+            }
         }
         /// <summary>Draws a single grass buffer</summary>
         /// <param name="buffer">The buffer of type <c>MeshPoint</c> used for drawing</param>
@@ -550,21 +853,16 @@ namespace MicahW.PointGrass {
         /// <param name="mesh">The mesh to be drawn for each <c>MeshPoint</c></param>
         /// <param name="mat">The material used for rendering</param>
         /// <param name="bounds">The bounding box</param>
-        private void DrawGrassBuffer(ComputeBuffer buffer, ref MaterialPropertyBlock block, Mesh mesh, Material mat, Bounds bounds) {
+        private void DrawGrassBuffer(ComputeBuffer buffer, ref MaterialPropertyBlock block, Mesh mesh, Material mat, Bounds bounds, Camera targetCamera) {
             if (buffer == null || !buffer.IsValid()) { return; }
             int count = Mathf.CeilToInt(buffer.count * pointLODFactor);
             // If the mesh isn't null, the material isn't null, and the material property block isn't null, the point count is greater than 0, draw the buffer
             if (mesh != null && mat != null && block != null && count > 0) {
-                // Apply the offset to the bounding box
-                bounds = AddBoundsExtrusion(bounds);
-                // Rebind on every draw. Metal validates the active property block at
-                // submission time, and may discard a buffer binding after a material
-                // or shader variant is reloaded in the editor.
-                if (!PropertyIDsInitialized) { FindPropertyIDs(); }
-                block.SetBuffer(ID_PointBuff, buffer);
-                UpdateMaterialPropertyBlock(ref block, transform);
-                // Draw the grass, using the generated MaterialPropertyBlock to supply buffer data
-                Graphics.DrawMeshInstancedProcedural(mesh, 0, mat, bounds, count, block, shadowMode, true, renderLayer.LayerIndex, null);
+                // The buffer is bound when its material property block is created.
+                // Rebinding it per chunk per frame turns a wide map view into hundreds
+                // of avoidable native property writes on the CPU.
+                Camera drawCamera = renderInAuxiliaryCameras ? null : targetCamera;
+                Graphics.DrawMeshInstancedProcedural(mesh, 0, mat, bounds, count, block, shadowMode, true, renderLayer.LayerIndex, drawCamera);
             }
 
         }
@@ -616,28 +914,14 @@ namespace MicahW.PointGrass {
         /// <param name="localBounds">The bounding box in local space</param>
         /// <returns><c>Bounds</c> - The bounding box transformed from the renderer's local space to world space</returns>
         private Bounds TransformBounds(Bounds localBounds) {
-            // Get the min and max points
-            Vector3 min = localBounds.min;
-            Vector3 max = localBounds.max;
-            // Get all the corner points
-            Vector3[] points = new Vector3[] {
-                min, max,
-
-                new Vector3(max.x, min.y, min.z),
-                new Vector3(min.x, max.y, min.z),
-                new Vector3(min.x, min.y, max.z),
-
-                new Vector3(min.x, max.y, max.z),
-                new Vector3(max.x, min.y, max.z),
-                new Vector3(max.x, max.y, min.z),
-            };
-            // Transform all the points
-            for (int i = 0; i < points.Length; i++) { points[i] = transform.TransformPoint(points[i]); }
-            // Create the new bounds
-            localBounds = new Bounds(points[0], Vector3.zero);
-            for (int i = 1; i < points.Length; i++) { localBounds.Encapsulate(points[i]); }
-            // Return the bounding box
-            return localBounds;
+            Matrix4x4 matrix = transform.localToWorldMatrix;
+            Vector3 extent = localBounds.extents;
+            Vector3 worldExtent = new Vector3(
+                Mathf.Abs(matrix.m00) * extent.x + Mathf.Abs(matrix.m01) * extent.y + Mathf.Abs(matrix.m02) * extent.z,
+                Mathf.Abs(matrix.m10) * extent.x + Mathf.Abs(matrix.m11) * extent.y + Mathf.Abs(matrix.m12) * extent.z,
+                Mathf.Abs(matrix.m20) * extent.x + Mathf.Abs(matrix.m21) * extent.y + Mathf.Abs(matrix.m22) * extent.z
+            );
+            return new Bounds(matrix.MultiplyPoint3x4(localBounds.center), worldExtent * 2f);
         }
         /// <summary>Applys <c>boundingBoxOffset</c> to the input bounding box</summary>
         /// <param name="worldSpaceBounds">The input bounding box</param>

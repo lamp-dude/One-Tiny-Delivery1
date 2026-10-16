@@ -1,5 +1,5 @@
 fileFormatVersion: 2
-guid: 531a9515a3189bd4e93f11a1b812ea2e
+guid: 9f3d30c55de729d408651eb4ba661f17
 AssemblyDefinitionImporter:
   externalObjects: {}
   userData: 
@@ -7,8 +7,8 @@ AssemblyDefinitionImporter:
   assetBundleVariant: 
 AssetOrigin:
   serializedVersion: 1
-  productId: 54733
-  packageName: Low Poly Ultimate Pack
-  packageVersion: 10.0
+  productId: 93089
+  packageName: Low Poly Animated Animals
+  packageVersion: 4.1.1
   assetPath: Assets/polyperfect/Common/Polyperfect.Common.asmdef
-  uploadId: 805410
+  uploadId: 779737

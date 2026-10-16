@@ -1,7 +1,5 @@
 using System.Collections;
 using System.Collections.Generic;
-using System.Linq;
-
 using UnityEngine;
 
 namespace MicahW.PointGrass {
@@ -12,9 +10,11 @@ namespace MicahW.PointGrass {
 
         private ComputeBuffer objectsBuffer;
         private List<PointGrassDisplacer> displacers;
+        private ObjectData[] objectData;
 
         private static readonly int maxDisplacerCount = 32;
         private int DisplacerCount => Mathf.Min(displacers.Count, maxDisplacerCount);
+        public int ActiveDisplacerCount => DisplacerCount;
 
         public delegate void DisplacementDelegate(PointGrassDisplacementManager manager);
         public static event DisplacementDelegate OnInitialize;
@@ -26,6 +26,7 @@ namespace MicahW.PointGrass {
 
                 objectsBuffer = new ComputeBuffer(maxDisplacerCount, ObjectData.stride);
                 displacers = new List<PointGrassDisplacer>();
+                objectData = new ObjectData[maxDisplacerCount];
 
                 OnInitialize?.Invoke(this);
             }
@@ -43,8 +44,10 @@ namespace MicahW.PointGrass {
 
         // Update the compute buffer with the displacers' data
         private void UpdateBuffer() {
-            var objectData = displacers.Select(a => a.GetObjectData()).ToArray();
-            objectsBuffer.SetData(objectData, 0, 0, DisplacerCount);
+            int count = DisplacerCount;
+            if (count == 0) { return; }
+            for (int i = 0; i < count; i++) { objectData[i] = displacers[i].GetObjectData(); }
+            objectsBuffer.SetData(objectData, 0, 0, count);
         }
 
         // Update functions to add and remove displacers from the internal list

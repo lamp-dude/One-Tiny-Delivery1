@@ -17,6 +17,7 @@ public class carCam : MonoBehaviour
     public float snapAngle = 90f;
     public float rotationLerpSpeed = 5f;
     public float angleTolerance = 5f;
+    [Min(0f)] public float returnToDefaultDelay = 4f;
     public float uiClearanceTime = 0.15f; 
 
     [Header("Zoom Settings")]
@@ -24,10 +25,6 @@ public class carCam : MonoBehaviour
     public float maxDistance = 30f;
     public float defaultDistance = 15f; // ✅ Added this variable
     public float zoomSpeed = 10f;
-
-    [Header("Collision Settings")]
-    public LayerMask collisionLayers;
-    public float collisionOffset = 0.3f;
 
     private float currentDistance;
     private float targetDistance;
@@ -39,7 +36,7 @@ public class carCam : MonoBehaviour
     private Vector3 smoothVelocity;
 
     private float lastUIHoverTime;
-
+    private float lastManualCameraInputTime;
     void Start()
     {
         // ✅ Changed these two lines to use defaultDistance instead of maxDistance
@@ -53,7 +50,7 @@ public class carCam : MonoBehaviour
 
     void LateUpdate()
     {
-        if (!target) return;
+        if (!target || PrologueController.IsGameplayBlocked) return;
 
         bool overUI = EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
 
@@ -62,37 +59,23 @@ public class carCam : MonoBehaviour
 
         bool uiBlocking = (Time.time - lastUIHoverTime) < uiClearanceTime;
 
-        HandleZoom(!uiBlocking);
         HandleRotation(!uiBlocking);
 
         UpdateCameraPosition();
     }
 
-    void HandleZoom(bool allowInput)
-    {
-        if (allowInput)
-        {
-            float scrollInput = Input.GetAxis("Mouse ScrollWheel");
-            if (scrollInput != 0f)
-            {
-                targetDistance -= scrollInput * zoomSpeed;
-                targetDistance = Mathf.Clamp(targetDistance, minDistance, maxDistance);
-            }
-        }
-
-        currentDistance = Mathf.Lerp(currentDistance, targetDistance, Time.deltaTime * zoomSpeed);
-    }
-
     void HandleRotation(bool allowInput)
     {
-        if (allowInput && Input.GetMouseButton(1)) // right mouse drag
+        float mouseMovement = Input.GetAxis("Mouse X");
+        if (allowInput && Mathf.Abs(mouseMovement) > 0.0001f)
         {
             isManual = true;
-            manualYaw += Input.GetAxis("Mouse X") * rotationSpeed;
+            lastManualCameraInputTime = Time.time;
+            manualYaw += mouseMovement * rotationSpeed;
         }
-        else
+        else if (!isManual || Time.time - lastManualCameraInputTime >= returnToDefaultDelay)
         {
-            if (isManual) isManual = false;
+            isManual = false;
 
             float targetYaw = target.eulerAngles.y;
             float yawDelta = Mathf.DeltaAngle(snapYaw, targetYaw);
@@ -113,15 +96,6 @@ public class carCam : MonoBehaviour
         Vector3 targetPos = target.position + Vector3.up * height;
         Vector3 direction = smoothRotation * Vector3.back;
         Vector3 desiredCamPos = targetPos + direction * currentDistance;
-
-        if (Physics.Raycast(targetPos, direction, out RaycastHit hit, currentDistance, collisionLayers))
-        {
-            float adjustedDist = Vector3.Distance(targetPos, hit.point) - collisionOffset;
-            
-            // ✅ Ensure we don't snap closer than minDistance even during collision
-            currentDistance = Mathf.Clamp(adjustedDist, minDistance, maxDistance); 
-            desiredCamPos = targetPos + direction * currentDistance;
-        }
 
         transform.position = Vector3.SmoothDamp(
             transform.position, desiredCamPos, ref smoothVelocity, 1f / followSpeed
