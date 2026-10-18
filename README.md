@@ -2,7 +2,8 @@
 
 One Tiny Delivery is a small Unity delivery game set on a big island with a forest, fields, valleys, and mountains. Drive the three wheeled truck, pick up packages, and complete deliveries across the map.
 Explore the vast map and talk to the people along the way to hear their stories!
-<img width="794" height="500" alt="image" src="https://github.com/user-attachments/assets/7ef70bac-f64b-470f-a19c-d21a804731be" />
+
+<img width="159" height="100" alt="image" src="https://github.com/user-attachments/assets/7ef70bac-f64b-470f-a19c-d21a804731be" />
 
 
 ## Controls
