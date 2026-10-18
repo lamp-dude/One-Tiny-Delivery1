@@ -30,9 +30,14 @@ The main gameplay scene uses streamed terrain scenes under `Assets/Scenes/Terrai
 
 ## Main folders
 
-- `Assets/Scripts` - game code
-- `Assets/Scenes` - menu, terrain, and finale scenes
+- `Assets/Scripts` - game code 
+  - features include custom dialogue and delivery system, car controller, UI behaviors, terrain optimization  
+  
+- `Assets/Scenes` - menu, terrain, prologue, and finale scenes
+  - includes all the scenes present in the game
+  
 - `Assets/Art` - player vehicle art and related assets
+
 - `Assets/Resources` - intro resources
 
 ## AI Usage
